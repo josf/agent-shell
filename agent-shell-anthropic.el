@@ -36,25 +36,43 @@
 (autoload 'agent-shell-make-agent-config "agent-shell")
 (declare-function agent-shell--dwim "agent-shell")
 
-(cl-defun agent-shell-anthropic-make-authentication (&key api-key login oauth)
+(cl-defun agent-shell-anthropic-make-authentication (&key api-key login oauth bedrock)
   "Create anthropic authentication configuration.
 
 API-KEY is the Anthropic API key string or a function returning one.
 LOGIN when non-nil indicates to use login-based authentication.
 OAUTH is an OAuth token string or a function returning one.
+BEDROCK is an alist for AWS Bedrock authentication with keys:
+  :region  - AWS region (required, e.g. \"us-east-1\")
+  :profile - AWS profile (optional, e.g. \"your-aws-profile\")
 
-Only one of API-KEY, LOGIN, or OAUTH should be provided, never more than one."
+Only one of API-KEY, LOGIN, OAUTH, or BEDROCK should be provided,
+never more than one.
+
+Example BEDROCK value:
+
+  \\='((:region . \"us-east-1\")
+    (:profile . \"your-aws-profile\"))"
   (when (and api-key login)
     (error "Cannot specify both :api-key and :login - choose one"))
   (when (and oauth login)
     (error "Cannot specify both :oauth and :login - choose one"))
   (when (and api-key oauth)
     (error "Cannot specify both :api-key and :oauth - choose one"))
-  (unless (or api-key login oauth)
-    (error "Must specify either :api-key, :login, or :oauth"))
+  (when (and bedrock api-key)
+    (error "Cannot specify both :bedrock and :api-key - choose one"))
+  (when (and bedrock login)
+    (error "Cannot specify both :bedrock and :login - choose one"))
+  (when (and bedrock oauth)
+    (error "Cannot specify both :bedrock and :oauth - choose one"))
+  (unless (or api-key login oauth bedrock)
+    (error "Must specify either :api-key, :login, :oauth, or :bedrock"))
+  (when (and bedrock (not (map-elt bedrock :region)))
+    (error "Bedrock authentication requires :region"))
   (cond
    (oauth `((:oauth . ,oauth)))
    (api-key `((:api-key . ,api-key)))
+   (bedrock `((:bedrock . ,bedrock)))
    (login `((:login . t)))))
 
 (defcustom agent-shell-anthropic-authentication
@@ -83,7 +101,14 @@ For OAuth token:
   or
 
   (setq agent-shell-anthropic-authentication
-        (agent-shell-anthropic-make-authentication :oauth (lambda () ... )))"
+        (agent-shell-anthropic-make-authentication :oauth (lambda () ... )))
+
+For AWS Bedrock:
+
+  (setq agent-shell-anthropic-authentication
+        (agent-shell-anthropic-make-authentication
+         :bedrock \\='((:region . \"us-east-1\")
+                    (:profile . \"your-aws-profile\"))))"
   :type 'alist
   :group 'agent-shell)
 
@@ -178,6 +203,9 @@ additional environment variables."
                              ((map-elt agent-shell-anthropic-authentication :oauth)
                               (list (format "CLAUDE_CODE_OAUTH_TOKEN=%s"
                                             (agent-shell-anthropic-oauth-token))))
+                             ((map-elt agent-shell-anthropic-authentication :bedrock)
+                              (agent-shell-anthropic--bedrock-env-vars
+                               (map-elt agent-shell-anthropic-authentication :bedrock)))
                              (t
                               (error "Invalid authentication configuration")))))
     (agent-shell--make-acp-client :command (car agent-shell-anthropic-claude-acp-command)
@@ -209,6 +237,24 @@ additional environment variables."
             "OAuth token not found.  Check out `agent-shell-anthropic-authentication'")))
         (t
          nil)))
+
+(defun agent-shell-anthropic--bedrock-env-vars (bedrock)
+  "Build environment variables for AWS Bedrock authentication.
+
+BEDROCK is an alist with :region (required) and :profile (optional).
+
+Example:
+
+  (agent-shell-anthropic--bedrock-env-vars
+   \\='((:region . \"us-east-1\")
+     (:profile . \"your-aws-profile\")))
+  => (\"CLAUDE_CODE_USE_BEDROCK=1\"
+      \"AWS_REGION=us-east-1\"
+      \"AWS_PROFILE=your-aws-profile\")"
+  (append (list "CLAUDE_CODE_USE_BEDROCK=1"
+                (format "AWS_REGION=%s" (map-elt bedrock :region)))
+          (when (map-elt bedrock :profile)
+            (list (format "AWS_PROFILE=%s" (map-elt bedrock :profile))))))
 
 (defun agent-shell-anthropic--claude-code-welcome-message (config)
   "Return Claude Agent ASCII art as per own repo using `shell-maker' CONFIG."

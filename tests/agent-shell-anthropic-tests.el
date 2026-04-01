@@ -103,6 +103,92 @@
         (when (buffer-live-p test-buffer)
           (kill-buffer test-buffer))))))
 
+(ert-deftest agent-shell-anthropic-make-claude-client-bedrock-test ()
+  "Test agent-shell-anthropic-make-claude-client with Bedrock authentication."
+  (cl-letf (((symbol-function 'executable-find)
+             (lambda (_) "/usr/bin/claude-agent-acp")))
+    ;; Test with Bedrock authentication (region and profile)
+    (let* ((agent-shell-anthropic-authentication
+            '(:bedrock ((:region . "us-east-1")
+                        (:profile . "my-profile"))))
+           (agent-shell-anthropic-claude-acp-command '("claude-agent-acp"))
+           (agent-shell-anthropic-claude-environment '())
+           (test-buffer (get-buffer-create "*test-buffer*"))
+           (client (agent-shell-anthropic-make-claude-client :buffer test-buffer))
+           (env-vars (map-elt client :environment-variables)))
+      (unwind-protect
+          (progn
+            (should (member "CLAUDE_CODE_USE_BEDROCK=1" env-vars))
+            (should (member "AWS_REGION=us-east-1" env-vars))
+            (should (member "AWS_PROFILE=my-profile" env-vars)))
+        (when (buffer-live-p test-buffer)
+          (kill-buffer test-buffer))))
+
+    ;; Test with Bedrock authentication (region only, no profile)
+    (let* ((agent-shell-anthropic-authentication
+            '(:bedrock ((:region . "us-east-1"))))
+           (agent-shell-anthropic-claude-acp-command '("claude-agent-acp"))
+           (agent-shell-anthropic-claude-environment '())
+           (test-buffer (get-buffer-create "*test-buffer*"))
+           (client (agent-shell-anthropic-make-claude-client :buffer test-buffer))
+           (env-vars (map-elt client :environment-variables)))
+      (unwind-protect
+          (progn
+            (should (member "CLAUDE_CODE_USE_BEDROCK=1" env-vars))
+            (should (member "AWS_REGION=us-east-1" env-vars))
+            (should (not (seq-find (lambda (v) (string-prefix-p "AWS_PROFILE=" v)) env-vars))))
+        (when (buffer-live-p test-buffer)
+          (kill-buffer test-buffer))))
+
+    ;; Test Bedrock with additional environment variables
+    (let* ((agent-shell-anthropic-authentication
+            '(:bedrock ((:region . "us-east-1")
+                        (:profile . "my-profile"))))
+           (agent-shell-anthropic-claude-acp-command '("claude-agent-acp"))
+           (agent-shell-anthropic-claude-environment '("ANTHROPIC_MODEL=eu.anthropic.claude-opus-4-6-v1"))
+           (test-buffer (get-buffer-create "*test-buffer*"))
+           (client (agent-shell-anthropic-make-claude-client :buffer test-buffer))
+           (env-vars (map-elt client :environment-variables)))
+      (unwind-protect
+          (progn
+            (should (member "CLAUDE_CODE_USE_BEDROCK=1" env-vars))
+            (should (member "AWS_REGION=us-east-1" env-vars))
+            (should (member "ANTHROPIC_MODEL=eu.anthropic.claude-opus-4-6-v1" env-vars)))
+        (when (buffer-live-p test-buffer)
+          (kill-buffer test-buffer))))))
+
+(ert-deftest agent-shell-anthropic-make-authentication-bedrock-validation-test ()
+  "Test validation in agent-shell-anthropic-make-authentication for Bedrock."
+  ;; Bedrock requires :region
+  (should-error (agent-shell-anthropic-make-authentication
+                 :bedrock '((:profile . "some-profile")))
+                :type 'error)
+
+  ;; Cannot combine bedrock with api-key
+  (should-error (agent-shell-anthropic-make-authentication
+                 :bedrock '((:region . "us-east-1"))
+                 :api-key "test-key")
+                :type 'error)
+
+  ;; Cannot combine bedrock with login
+  (should-error (agent-shell-anthropic-make-authentication
+                 :bedrock '((:region . "us-east-1"))
+                 :login t)
+                :type 'error)
+
+  ;; Cannot combine bedrock with oauth
+  (should-error (agent-shell-anthropic-make-authentication
+                 :bedrock '((:region . "us-east-1"))
+                 :oauth "test-token")
+                :type 'error)
+
+  ;; Valid bedrock config
+  (should (equal (agent-shell-anthropic-make-authentication
+                  :bedrock '((:region . "us-east-1")
+                             (:profile . "my-profile")))
+                 '((:bedrock . ((:region . "us-east-1")
+                                (:profile . "my-profile")))))))
+
 (ert-deftest agent-shell-anthropic-default-model-id-function-test ()
   "Test that agent-shell-anthropic-default-model-id accepts a function."
   (let* ((config (agent-shell-anthropic-make-claude-code-config))
