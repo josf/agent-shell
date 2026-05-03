@@ -2970,8 +2970,7 @@ by default, RENDER-BODY-IMAGES to enable inline image rendering in body."
                 (derived-mode-p 'agent-shell-viewport-view-mode))))
     (with-current-buffer viewport-buffer
       (let ((inhibit-read-only t)
-            (auto-scroll (shell-maker--should-auto-scroll-p))
-            (saved-point (point-marker)))
+            (auto-scroll (shell-maker--should-auto-scroll-p)))
         (when-let* ((range (agent-shell-ui-update-fragment
                             (agent-shell-ui-make-fragment-model
                              :namespace-id (or namespace-id
@@ -3009,61 +3008,73 @@ by default, RENDER-BODY-IMAGES to enable inline image rendering in body."
               (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks)
                     (markdown-overlays-render-images nil))
                 (markdown-overlays-put))))
-          (if auto-scroll
-              (goto-char (point-max))
-            (goto-char saved-point))))))
+          (when auto-scroll
+            (goto-char (point-max)))))))
   (with-current-buffer (map-elt state :buffer)
     (unless (and (derived-mode-p 'agent-shell-mode)
                  (equal (current-buffer)
                         (map-elt state :buffer)))
       (error "Editing the wrong buffer: %s" (current-buffer)))
-    (shell-maker-with-auto-scroll-edit
-     (when-let* ((range (agent-shell-ui-update-fragment
-                         (agent-shell-ui-make-fragment-model
-                          :namespace-id (or namespace-id
-                                            (map-elt state :request-count))
-                          :block-id block-id
-                          :label-left label-left
-                          :label-right label-right
-                          :body body)
-                         :navigation navigation
-                         :append append
-                         :create-new create-new
-                         :expanded expanded
-                         :no-undo t))
-                 (padding-start (map-nested-elt range '(:padding :start)))
-                 (padding-end (map-nested-elt range '(:padding :end)))
-                 (block-start (map-nested-elt range '(:block :start)))
-                 (block-end (map-nested-elt range '(:block :end))))
-       (save-restriction
-         ;; TODO: Move this to shell-maker?
-         (let ((inhibit-read-only t))
-           ;; comint relies on field property to
-           ;; derive `comint-next-prompt'.
-           ;; Marking as field to avoid false positives in
-           ;; `agent-shell-next-item' and `agent-shell-previous-item'.
-           (add-text-properties (or padding-start block-start)
-                                (or padding-end block-end) '(field output)))
-         ;; Apply markdown overlay to body.
-         (when-let ((body-start (map-nested-elt range '(:body :start)))
-                    (body-end (map-nested-elt range '(:body :end))))
-           (narrow-to-region body-start body-end)
-           (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks))
-             (markdown-overlays-put))
-           (widen))
-         ;;
-         ;; Note: For now, we're skipping applying markdown overlays
-         ;; on left labels as they currently carry propertized text
-         ;; for statuses (ie. boxed).
-         ;;
-         ;; Apply markdown overlay to right label.
-         (when-let ((label-right-start (map-nested-elt range '(:label-right :start)))
-                    (label-right-end (map-nested-elt range '(:label-right :end))))
-           (narrow-to-region label-right-start label-right-end)
-           (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks))
-             (markdown-overlays-put))
-           (widen)))
-       (run-hook-with-args 'agent-shell-section-functions range)))))
+    (let* ((window (get-buffer-window (current-buffer)))
+           (auto-scroll (eobp))
+           (saved-point (point))
+           (saved-mark (mark t))
+           (saved-mark-active mark-active)
+           (saved-window-start (and window (window-start window))))
+      (shell-maker-with-auto-scroll-edit
+       (when-let* ((range (agent-shell-ui-update-fragment
+                           (agent-shell-ui-make-fragment-model
+                            :namespace-id (or namespace-id
+                                              (map-elt state :request-count))
+                            :block-id block-id
+                            :label-left label-left
+                            :label-right label-right
+                            :body body)
+                           :navigation navigation
+                           :append append
+                           :create-new create-new
+                           :expanded expanded
+                           :no-undo t))
+                   (padding-start (map-nested-elt range '(:padding :start)))
+                   (padding-end (map-nested-elt range '(:padding :end)))
+                   (block-start (map-nested-elt range '(:block :start)))
+                   (block-end (map-nested-elt range '(:block :end))))
+         (save-restriction
+           ;; TODO: Move this to shell-maker?
+           (let ((inhibit-read-only t))
+             ;; comint relies on field property to
+             ;; derive `comint-next-prompt'.
+             ;; Marking as field to avoid false positives in
+             ;; `agent-shell-next-item' and `agent-shell-previous-item'.
+             (add-text-properties (or padding-start block-start)
+                                  (or padding-end block-end) '(field output)))
+           ;; Apply markdown overlay to body.
+           (when-let ((body-start (map-nested-elt range '(:body :start)))
+                      (body-end (map-nested-elt range '(:body :end))))
+             (narrow-to-region body-start body-end)
+             (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks))
+               (markdown-overlays-put))
+             (widen))
+           ;;
+           ;; Note: For now, we're skipping applying markdown overlays
+           ;; on left labels as they currently carry propertized text
+           ;; for statuses (ie. boxed).
+           ;;
+           ;; Apply markdown overlay to right label.
+           (when-let ((label-right-start (map-nested-elt range '(:label-right :start)))
+                      (label-right-end (map-nested-elt range '(:label-right :end))))
+             (narrow-to-region label-right-start label-right-end)
+             (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks))
+               (markdown-overlays-put))
+             (widen)))
+         (run-hook-with-args 'agent-shell-section-functions range)))
+      (unless auto-scroll
+        (goto-char saved-point)
+        (when saved-mark
+          (set-marker (mark-marker) saved-mark))
+        (setq mark-active saved-mark-active)
+        (when window
+          (set-window-start window saved-window-start t))))))
 
 (cl-defun agent-shell--update-text (&key state namespace-id block-id text append create-new)
   "Update plain text entry in the shell buffer.
