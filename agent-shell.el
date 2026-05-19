@@ -62,6 +62,7 @@
 (require 'agent-shell-goose)
 (require 'agent-shell-heartbeat)
 (require 'agent-shell-active-message)
+(require 'agent-shell-hermes)
 (require 'agent-shell-kimi)
 (require 'agent-shell-kiro)
 (require 'agent-shell-mistral)
@@ -518,7 +519,8 @@ Goose, Cursor, Auggie, and others."
         (agent-shell-mistral-make-config)
         (agent-shell-opencode-make-agent-config)
         (agent-shell-pi-make-agent-config)
-        (agent-shell-qwen-make-agent-config)))
+        (agent-shell-qwen-make-agent-config)
+        (agent-shell-hermes-make-agent-config)))
 
 (defcustom agent-shell-agent-configs
   (agent-shell--make-default-agent-configs)
@@ -546,6 +548,7 @@ configuration alist for backwards compatibility."
                  (const :tag "Droid" droid)
                  (const :tag "Gemini CLI" gemini-cli)
                  (const :tag "Goose" goose)
+                 (const :tag "Hermes" hermes)
                  (const :tag "Kimi" kimi)
                  (const :tag "Kiro" kiro)
                  (const :tag "Mistral" le-chat)
@@ -2455,10 +2458,10 @@ For example:
 (defun agent-shell--dot-subdir (subdir)
   "Return path to SUBDIR for `agent-shell' data, creating it if needed.
 Calls `agent-shell-dot-subdir-function' to resolve the path.
-When the directory is first created inside a git repo and
-.agent-shell/ is not yet ignored, automatically add it to .gitignore.
-This gitignore update is a one-time operation: if the entry is later
-removed from .gitignore it will not be re-added."
+When the directory is first created under the project .agent-shell/ directory
+inside a git repo and .agent-shell/ is not yet ignored, automatically add it
+to .gitignore.  This gitignore update is a one-time operation: if the entry is
+later removed from .gitignore it will not be re-added."
   (unless (functionp agent-shell-dot-subdir-function)
     (error "agent-shell-dot-subdir-function must be set to a function"))
   (let ((dir (funcall agent-shell-dot-subdir-function subdir)))
@@ -2466,8 +2469,23 @@ removed from .gitignore it will not be re-added."
       (error "Failed to resolve agent-shell data directory (subdir: %s).  Resulting directory is not a non-empty string (dir: %s)" subdir dir))
     (unless (file-directory-p dir)
       (make-directory dir t)
-      (agent-shell--ensure-gitignore (agent-shell-cwd)))
+      (when (agent-shell--dot-subdir-in-repo-p dir)
+        (agent-shell--ensure-gitignore (agent-shell-cwd))))
     dir))
+
+(defun agent-shell--dot-subdir-in-repo-p (dir)
+  "Return non-nil when DIR is under the project .agent-shell directory.
+
+For example:
+
+  (agent-shell--dot-subdir-in-repo-p \"/path/to/project/.agent-shell/screenshots\")
+  => t
+
+  (agent-shell--dot-subdir-in-repo-p \"/home/user/.emacs.d/agent-shell/project/screenshots\")
+  => nil"
+  (file-in-directory-p dir
+                       (file-name-as-directory
+                        (expand-file-name ".agent-shell" (agent-shell-cwd)))))
 
 (defun agent-shell--ensure-gitignore (project-root)
   "If .agent-shell/ is not ignored under PROJECT-ROOT, add it to .gitignore."
@@ -2976,8 +2994,7 @@ by default, RENDER-BODY-IMAGES to enable inline image rendering in body."
                 (derived-mode-p 'agent-shell-viewport-view-mode))))
     (with-current-buffer viewport-buffer
       (let ((inhibit-read-only t)
-            (auto-scroll (shell-maker--should-auto-scroll-p))
-            (saved-point (point-marker)))
+            (auto-scroll (shell-maker--should-auto-scroll-p)))
         (when-let* ((range (agent-shell-ui-update-fragment
                             (agent-shell-ui-make-fragment-model
                              :namespace-id (or namespace-id
@@ -3015,61 +3032,73 @@ by default, RENDER-BODY-IMAGES to enable inline image rendering in body."
               (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks)
                     (markdown-overlays-render-images nil))
                 (markdown-overlays-put))))
-          (if auto-scroll
-              (goto-char (point-max))
-            (goto-char saved-point))))))
+          (when auto-scroll
+            (goto-char (point-max)))))))
   (with-current-buffer (map-elt state :buffer)
     (unless (and (derived-mode-p 'agent-shell-mode)
                  (equal (current-buffer)
                         (map-elt state :buffer)))
       (error "Editing the wrong buffer: %s" (current-buffer)))
-    (shell-maker-with-auto-scroll-edit
-     (when-let* ((range (agent-shell-ui-update-fragment
-                         (agent-shell-ui-make-fragment-model
-                          :namespace-id (or namespace-id
-                                            (map-elt state :request-count))
-                          :block-id block-id
-                          :label-left label-left
-                          :label-right label-right
-                          :body body)
-                         :navigation navigation
-                         :append append
-                         :create-new create-new
-                         :expanded expanded
-                         :no-undo t))
-                 (padding-start (map-nested-elt range '(:padding :start)))
-                 (padding-end (map-nested-elt range '(:padding :end)))
-                 (block-start (map-nested-elt range '(:block :start)))
-                 (block-end (map-nested-elt range '(:block :end))))
-       (save-restriction
-         ;; TODO: Move this to shell-maker?
-         (let ((inhibit-read-only t))
-           ;; comint relies on field property to
-           ;; derive `comint-next-prompt'.
-           ;; Marking as field to avoid false positives in
-           ;; `agent-shell-next-item' and `agent-shell-previous-item'.
-           (add-text-properties (or padding-start block-start)
-                                (or padding-end block-end) '(field output)))
-         ;; Apply markdown overlay to body.
-         (when-let ((body-start (map-nested-elt range '(:body :start)))
-                    (body-end (map-nested-elt range '(:body :end))))
-           (narrow-to-region body-start body-end)
-           (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks))
-             (markdown-overlays-put))
-           (widen))
-         ;;
-         ;; Note: For now, we're skipping applying markdown overlays
-         ;; on left labels as they currently carry propertized text
-         ;; for statuses (ie. boxed).
-         ;;
-         ;; Apply markdown overlay to right label.
-         (when-let ((label-right-start (map-nested-elt range '(:label-right :start)))
-                    (label-right-end (map-nested-elt range '(:label-right :end))))
-           (narrow-to-region label-right-start label-right-end)
-           (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks))
-             (markdown-overlays-put))
-           (widen)))
-       (run-hook-with-args 'agent-shell-section-functions range)))))
+    (let* ((window (get-buffer-window (current-buffer)))
+           (auto-scroll (eobp))
+           (saved-point (point))
+           (saved-mark (mark t))
+           (saved-mark-active mark-active)
+           (saved-window-start (and window (window-start window))))
+      (shell-maker-with-auto-scroll-edit
+       (when-let* ((range (agent-shell-ui-update-fragment
+                           (agent-shell-ui-make-fragment-model
+                            :namespace-id (or namespace-id
+                                              (map-elt state :request-count))
+                            :block-id block-id
+                            :label-left label-left
+                            :label-right label-right
+                            :body body)
+                           :navigation navigation
+                           :append append
+                           :create-new create-new
+                           :expanded expanded
+                           :no-undo t))
+                   (padding-start (map-nested-elt range '(:padding :start)))
+                   (padding-end (map-nested-elt range '(:padding :end)))
+                   (block-start (map-nested-elt range '(:block :start)))
+                   (block-end (map-nested-elt range '(:block :end))))
+         (save-restriction
+           ;; TODO: Move this to shell-maker?
+           (let ((inhibit-read-only t))
+             ;; comint relies on field property to
+             ;; derive `comint-next-prompt'.
+             ;; Marking as field to avoid false positives in
+             ;; `agent-shell-next-item' and `agent-shell-previous-item'.
+             (add-text-properties (or padding-start block-start)
+                                  (or padding-end block-end) '(field output)))
+           ;; Apply markdown overlay to body.
+           (when-let ((body-start (map-nested-elt range '(:body :start)))
+                      (body-end (map-nested-elt range '(:body :end))))
+             (narrow-to-region body-start body-end)
+             (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks))
+               (markdown-overlays-put))
+             (widen))
+           ;;
+           ;; Note: For now, we're skipping applying markdown overlays
+           ;; on left labels as they currently carry propertized text
+           ;; for statuses (ie. boxed).
+           ;;
+           ;; Apply markdown overlay to right label.
+           (when-let ((label-right-start (map-nested-elt range '(:label-right :start)))
+                      (label-right-end (map-nested-elt range '(:label-right :end))))
+             (narrow-to-region label-right-start label-right-end)
+             (let ((markdown-overlays-highlight-blocks agent-shell-highlight-blocks))
+               (markdown-overlays-put))
+             (widen)))
+         (run-hook-with-args 'agent-shell-section-functions range)))
+      (unless auto-scroll
+        (goto-char saved-point)
+        (when saved-mark
+          (set-marker (mark-marker) saved-mark))
+        (setq mark-active saved-mark-active)
+        (when window
+          (set-window-start window saved-window-start t))))))
 
 (cl-defun agent-shell--update-text (&key state namespace-id block-id text append create-new)
   "Update plain text entry in the shell buffer.
@@ -3259,6 +3288,18 @@ A buffer-local hash table mapping cache keys to header strings.")
               ((not (string-empty-p session-id))))
     (propertize session-id 'font-lock-face 'font-lock-constant-face)))
 
+(defun agent-shell--svg-fill-color (face)
+  "Return foreground color for FACE suitable as an SVG fill value.
+Resolves inherited attributes and falls back to the `default' face
+foreground when FACE has no concrete foreground (e.g., Emacs 31
+faces whose foreground arrives indirectly).  Without this fallback,
+`face-attribute' may return the symbol `unspecified', which a renderer
+treats as an invalid color and draws as black."
+  (let ((fg (face-attribute face :foreground nil t)))
+    (if (or (null fg) (eq fg 'unspecified))
+        (face-attribute 'default :foreground nil t)
+      fg)))
+
 (cl-defun agent-shell--make-header-model (state &key qualifier bindings)
   "Create a header model alist from STATE, QUALIFIER, and BINDINGS.
 The model contains all inputs needed to render the graphical header."
@@ -3402,20 +3443,20 @@ When provided, included in help-echo tooltips."
                                       ;; Agent name
                                       (dom-append-child text-node
                                                         (dom-node 'tspan
-                                                                  `((fill . ,(face-attribute 'font-lock-variable-name-face :foreground)))
+                                                                  `((fill . ,(agent-shell--svg-fill-color 'font-lock-variable-name-face)))
                                                                   (map-elt header-model :buffer-name)))
                                       ;; Model name (optional)
                                       (when (map-elt header-model :model-name)
                                         ;; Add separator arrow
                                         (dom-append-child text-node
                                                           (dom-node 'tspan
-                                                                    `((fill . ,(face-attribute 'default :foreground))
+                                                                    `((fill . ,(agent-shell--svg-fill-color 'default))
                                                                       (dx . "8"))
                                                                     "➤"))
                                         ;; Add model name
                                         (dom-append-child text-node
                                                           (dom-node 'tspan
-                                                                    `((fill . ,(face-attribute 'font-lock-negation-char-face :foreground))
+                                                                    `((fill . ,(agent-shell--svg-fill-color 'font-lock-negation-char-face))
                                                                       (dx . "8"))
                                                                     (map-elt header-model :model-name))))
                                       ;; Session mode (optional)
@@ -3423,14 +3464,13 @@ When provided, included in help-echo tooltips."
                                         ;; Add separator arrow
                                         (dom-append-child text-node
                                                           (dom-node 'tspan
-                                                                    `((fill . ,(face-attribute 'default :foreground))
+                                                                    `((fill . ,(agent-shell--svg-fill-color 'default))
                                                                       (dx . "8"))
                                                                     "➤"))
                                         ;; Add session mode text
                                         (dom-append-child text-node
                                                           (dom-node 'tspan
-                                                                    `((fill . ,(or (face-attribute 'font-lock-type-face :foreground nil t)
-                                                                                   "#6699cc"))
+                                                                    `((fill . ,(agent-shell--svg-fill-color 'font-lock-type-face))
                                                                       (dx . "8"))
                                                                     (map-elt header-model :mode-name))))
                                       (when (map-elt header-model :context-indicator)
@@ -3438,22 +3478,21 @@ When provided, included in help-echo tooltips."
                                           ;; Add separator arrow
                                           (dom-append-child text-node
                                                             (dom-node 'tspan
-                                                                      `((fill . ,(face-attribute 'default :foreground))
+                                                                      `((fill . ,(agent-shell--svg-fill-color 'default))
                                                                         (dx . "8"))
                                                                       "➤")))
                                         ;; Add context indicator
                                         (dom-append-child text-node
                                                           (dom-node 'tspan
-                                                                    `((fill . ,(face-attribute
+                                                                    `((fill . ,(agent-shell--svg-fill-color
                                                                                 (or (get-text-property 0 'face (map-elt header-model :context-indicator))
-                                                                                    'default)
-                                                                                :foreground nil t))
+                                                                                    'default)))
                                                                       (dx . "8"))
                                                                     (format-mode-line (map-elt header-model :context-indicator)))))
                                       (when (map-elt header-model :busy-indicator-frame)
                                         (dom-append-child text-node
                                                           (dom-node 'tspan
-                                                                    `((fill . ,(face-attribute 'default :foreground))
+                                                                    `((fill . ,(agent-shell--svg-fill-color 'default))
                                                                       (dx . "8"))
                                                                     (map-elt header-model :busy-indicator-frame))))
                                       text-node))
@@ -3465,20 +3504,20 @@ When provided, included in help-echo tooltips."
                                       ;; Directory path
                                       (dom-append-child text-node
                                                         (dom-node 'tspan
-                                                                  `((fill . ,(face-attribute 'font-lock-string-face :foreground)))
+                                                                  `((fill . ,(agent-shell--svg-fill-color 'font-lock-string-face)))
                                                                   (map-elt header-model :project-name)))
                                       ;; Session ID (optional)
                                       (when (map-elt header-model :session-id)
                                         ;; Separator arrow (default foreground)
                                         (dom-append-child text-node
                                                           (dom-node 'tspan
-                                                                    `((fill . ,(face-attribute 'default :foreground))
+                                                                    `((fill . ,(agent-shell--svg-fill-color 'default))
                                                                       (dx . "8"))
                                                                     "➤"))
                                         ;; Session ID text
                                         (dom-append-child text-node
                                                           (dom-node 'tspan
-                                                                    `((fill . ,(face-attribute 'font-lock-constant-face :foreground))
+                                                                    `((fill . ,(agent-shell--svg-fill-color 'font-lock-constant-face))
                                                                       (dx . "8"))
                                                                     (substring-no-properties (map-elt header-model :session-id)))))
                                       text-node))
@@ -3493,7 +3532,7 @@ When provided, included in help-echo tooltips."
                                         (when qualifier
                                           (dom-append-child text-node
                                                             (dom-node 'tspan
-                                                                      `((fill . ,(face-attribute 'default :foreground)))
+                                                                      `((fill . ,(agent-shell--svg-fill-color 'default)))
                                                                       qualifier))
                                           (setq first nil))
                                         (dolist (binding bindings)
@@ -3501,7 +3540,7 @@ When provided, included in help-echo tooltips."
                                             ;; Add key (XML-escape angle brackets)
                                             (dom-append-child text-node
                                                               (dom-node 'tspan
-                                                                        `((fill . ,(face-attribute 'help-key-binding :foreground))
+                                                                        `((fill . ,(agent-shell--svg-fill-color 'help-key-binding))
                                                                           ,@(unless first '((dx . "8"))))
                                                                         (replace-regexp-in-string
                                                                          "<" "&lt;"
@@ -3512,7 +3551,7 @@ When provided, included in help-echo tooltips."
                                             ;; Add space and description
                                             (dom-append-child text-node
                                                               (dom-node 'tspan
-                                                                        `((fill . ,(face-attribute 'default :foreground))
+                                                                        `((fill . ,(agent-shell--svg-fill-color 'default))
                                                                           (dx . "8"))
                                                                         (map-elt binding :description)))))
                                         text-node)))
@@ -7026,13 +7065,21 @@ Remove: M-x agent-shell-remove-pending-request
 
 Read PROMPT from the minibuffer.  If the shell is busy, add it to the pending
 requests queue.  Otherwise, submit it immediately.  Queued requests will be
-automatically sent when the current request completes."
+automatically sent when the current request completes.
+
+While reading, @ completes project files and / completes available agent
+commands when the agent has reported them."
   (interactive
    (progn
      (unless (derived-mode-p 'agent-shell-mode)
        (error "Not in a shell"))
-     (list (read-string (or (map-nested-elt (agent-shell--state) '(:agent-config :shell-prompt))
-                            "Enqueue request: ")))))
+     (let ((shell-buffer (current-buffer)))
+       (list
+        (minibuffer-with-setup-hook
+            (lambda ()
+              (agent-shell-completion--setup-minibuffer shell-buffer))
+          (read-string (or (map-nested-elt (agent-shell--state) '(:agent-config :shell-prompt))
+                           "Enqueue request: ")))))))
   (if (shell-maker-busy)
       (agent-shell--enqueue-request :prompt prompt)
     (agent-shell--insert-to-shell-buffer :text prompt :submit t :no-focus t)))
