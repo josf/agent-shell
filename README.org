@@ -339,6 +339,20 @@ For OAuth token authentication (the =CLAUDE_CODE_OAUTH_TOKEN= we get from =claud
        :oauth (lambda () (auth-source-pass-get "secret" "anthropic-oauth-token"))))
 #+end_src
 
+For AWS Bedrock authentication:
+
+#+begin_src emacs-lisp
+(setq agent-shell-anthropic-authentication
+      (agent-shell-anthropic-make-authentication
+       :bedrock '((:region . "us-east-1")
+                  (:profile . "your-aws-profile"))))
+
+;; Optionally set the model via environment variables
+(setq agent-shell-anthropic-claude-environment
+      (agent-shell-make-environment-variables
+       "ANTHROPIC_MODEL" "us.anthropic.claude-opus-4-6-v1"))
+#+end_src
+
 For alternative Anthropic-compatible API endpoints, configure via environment variables:
 
 #+begin_src emacs-lisp
